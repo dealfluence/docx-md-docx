@@ -111,6 +111,8 @@ class RedlineEngine:
             logger.warning(f"Skipping edit: Target '{target_text[:20]}...' not found.")
             return
             
+        logger.debug(f"Target runs found: {len(target_runs)}. Last run text: '{target_runs[-1].text}'")
+            
         # Debug: Capture XML context
         parent_p = target_runs[0]._element.getparent()
         while parent_p.tag != qn("w:p") and parent_p.getparent() is not None:
@@ -136,6 +138,11 @@ class RedlineEngine:
                 parent = last_del_element.getparent()
                 del_index = parent.index(last_del_element)
                 
+                # Debug context
+                if del_index + 1 < len(parent):
+                     next_el = parent[del_index+1]
+                     logger.debug(f"Inserting modification before element: {next_el.text if hasattr(next_el, 'text') else next_el.tag}")
+                
                 # Use the last run as the style anchor
                 ins_elem = self.track_insert(
                     edit.proposed_new_text, 
@@ -150,6 +157,7 @@ class RedlineEngine:
             last_run = target_runs[-1]
             parent = last_run._r.getparent()
             index = parent.index(last_run._r)
+            logger.debug(f"Insert Index: {index+1}. Parent len: {len(parent)}")
 
             # Do NOT automatically prepend space. Trust the Diff engine.
             ins_elem = self.track_insert(edit.proposed_new_text, anchor_run=last_run)

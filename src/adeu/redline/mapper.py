@@ -110,8 +110,9 @@ class DocumentMapper:
         # 2. Handle Right Boundary
         # We re-calculate length because the first split might have changed things effectively
         # But logically, the text content sum hasn't changed, just the run wrappers.
-        current_match_len = sum(len(r.text) for r in working_runs)
-        extra_len = current_match_len - len(target_text)
+        # Use span indices to handle virtual newlines (\n\n) correctly
+        last_span = affected_spans[-1]
+        extra_len = last_span.end - end_idx
 
         if extra_len > 0:
             last_run = working_runs[-1]

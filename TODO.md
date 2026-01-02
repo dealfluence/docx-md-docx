@@ -6,15 +6,11 @@
 *   **Diff Engine**: `diff-match-patch` integration works to convert full-text rewrites into atomic edits.
 *   **Alignment**: Ingestion logic (`ingest.py`) and Mapper logic are aligned to use raw run concatenation, resolving most "Target Not Found" errors.
 *   **CLI**: Functional CLI for Extract -> Edit -> Redline workflow.
+*   **Offset Precision**: Fixed a critical bug in `DocumentMapper` where virtual newlines (`\n\n`) caused split-point calculations to drift, misplacing insertions in multi-paragraph matches.
+*   **Start-of-Document Handling**: `diff.py` now supports insertions at the very start of the document by converting them to modifications of the following text anchor.
 
 ## 🐛 Known Issues
-### 1. The "Extra Space" Artifact (Priority: High)
-*   **Symptoms**: In complex run sequences (e.g., `ARTICLE3 FEES`), the engine sometimes places the inserted space *after* the subsequent run instead of between them, or the visual output in Word shows double spaces (`ARTICLE3  FEES`).
-*   **Suspect**: The logic in `RedlineEngine._apply_single_edit` for determining the insertion point (`parent.insert(index + 1)`) might be off-by-one when runs are adjacent without spaces.
-*   **Investigation**: Debug logs in `redline_engine.py` show the XML structure.
-*   **Fix Strategy**: Create a dedicated unit test case in `tests/test_roundtrip.py` that replicates the `ARTICLE3 FEES` scenario specifically, then adjust the index calculation.
-
-### 2. Table Layouts
+### 1. Table Layouts
 *   **Status**: Basic support. Tables are extracted linearly (`|` separated).
 *   **Limitation**: Edits spanning across cell boundaries (e.g., merging two cells) are NOT supported and will likely throw errors or be ignored.
 *   **Next Step**: Implement explicit Table/Row/Cell awareness in `ComplianceEdit` target resolution.

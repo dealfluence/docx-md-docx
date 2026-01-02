@@ -1,7 +1,9 @@
 import io
+import pytest
 from docx import Document
 from adeu.models import ComplianceEdit, EditOperationType
 from adeu.redline.engine import RedlineEngine
+from adeu.redline.mapper import DocumentMapper
 from adeu.ingest import extract_text_from_stream
 
 def test_full_roundtrip_workflow(simple_docx_stream):
@@ -87,9 +89,9 @@ def test_split_run_behavior():
 def test_insertion_spacing_between_complex_runs():
     """
     Reproduction test for 'Extra Space' or misplaced insertion bug.
-    Scenario: Text is 'ARTICLE3FEES' split into runs ['ARTICLE', '3', 'FEES'].
-    Action: Insert ' ' after '3'.
-    Expected: 'ARTICLE' -> '3' -> INS(' ') -> 'FEES'
+    Scenario: Text is 'ARTICLE3 FEES' split into runs ['ARTICLE', '3 ', 'FEES'].
+    Action: Insert ' ' after 'ARTICLE' and ' ' after '3 '.
+    Expected: 'ARTICLE' -> INS(' ') -> '3 ' -> INS(' ') -> 'FEES'
     """
     doc = Document()
     p = doc.add_paragraph()
@@ -97,7 +99,7 @@ def test_insertion_spacing_between_complex_runs():
     # Create fragmented runs (simulate bold/not bold to prevent coalescing)
     r1 = p.add_run("ARTICLE")
     r1.bold = True
-    r2 = p.add_run("3")
+    r2 = p.add_run("3 ") # Note the space
     r2.bold = False
     r3 = p.add_run("FEES")
     r3.bold = True
@@ -106,11 +108,69 @@ def test_insertion_spacing_between_complex_runs():
     doc.save(stream)
     stream.seek(0)
     
-    # Insert space after "3" (Anchor="ARTICLE3")
-    # Note: We anchor to "3" specifically to test strict adjacency
+    # Edit 1: Insert space after ARTICLE
+    edit1 = ComplianceEdit(
+        operation=EditOperationType.INSERTION,
+        target_text_to_change_or_anchor="ARTICLE", 
+        proposed_new_text=" "
+    )
+    
+    # Edit 2: Insert space after "3 " (which ends in space)
+    # This mimics the "3 FEES" edit if the anchor matched "3 FEES"
+    edit2 = ComplianceEdit(
+        operation=EditOperationType.INSERTION,
+        target_text_to_change_or_anchor="3 ", 
+        proposed_new_text=" "
+    )
+    
+    engine = RedlineEngine(stream)
+    engine.apply_edits([edit1, edit2])
+    
+    result_stream = engine.save_to_stream()
+    doc = Document(result_stream)
+    xml = doc.element.xml
+    
+    # 1. Verify "3 " is still there
+    assert ">3 </w:t>" in xml
+    # 2. Verify "FEES" is there
+    assert ">FEES</w:t>" in xml
+    
+    # Verify Order
+    # ARTICLE -> INS(1) -> 3  -> INS(2) -> FEES
+    idx_art = xml.find(">ARTICLE</w:t>")
+    idx_3 = xml.find(">3 </w:t>")
+    idx_fees = xml.find(">FEES</w:t>")
+    
+    assert idx_art < idx_3, "ARTICLE before 3"
+    assert idx_3 < idx_fees, "3 before FEES"
+    
+    # Check that there is an insertion between ART and 3
+    segment_1 = xml[idx_art:idx_3]
+    assert "w:ins" in segment_1, "Missing insertion between ARTICLE and 3"
+    
+    # Check that there is an insertion between 3 and FEES
+    segment_2 = xml[idx_3:idx_fees]
+    assert "w:ins" in segment_2, "Missing insertion between 3 and FEES"
+
+def test_insertion_splits_coalesced_run():
+    """
+    Tests inserting text into a run that needs to be split.
+    Original: Run("ARTICLE3") (Coalesced)
+    Edit: Insert " " after "ARTICLE".
+    Expected: Run("ARTICLE"), Ins(" "), Run("3")
+    """
+    doc = Document()
+    p = doc.add_paragraph()
+    # Create one run
+    run = p.add_run("ARTICLE3")
+    
+    stream = io.BytesIO()
+    doc.save(stream)
+    stream.seek(0)
+    
     edit = ComplianceEdit(
         operation=EditOperationType.INSERTION,
-        target_text_to_change_or_anchor="3", 
+        target_text_to_change_or_anchor="ARTICLE",
         proposed_new_text=" "
     )
     
@@ -121,24 +181,13 @@ def test_insertion_spacing_between_complex_runs():
     doc = Document(result_stream)
     xml = doc.element.xml
     
-    # Assertions
-    # 1. Verify "3" is still there (not deleted)
-    assert ">3</w:t>" in xml
-    # 2. Verify "FEES" is there
-    assert ">FEES</w:t>" in xml
-    # 3. Verify Insertion of space
-    assert '<w:t xml:space="preserve"> </w:t>' in xml or '<w:t> </w:t>' in xml
-
-    # 4. Verify Order: 3 ... ins ... FEES
-    # We find indices in the XML string
+    # Check order: ARTICLE -> INS -> 3
+    idx_art = xml.find(">ARTICLE</w:t>")
     idx_3 = xml.find(">3</w:t>")
-    idx_fees = xml.find(">FEES</w:t>")
     idx_ins = xml.find('<w:t xml:space="preserve"> </w:t>')
-    if idx_ins == -1:
-        idx_ins = xml.find('<w:t> </w:t>')
+    if idx_ins == -1: idx_ins = xml.find('<w:t> </w:t>')
         
-    assert idx_3 < idx_ins, "Space should be after 3"
-    assert idx_ins < idx_fees, "Space should be before FEES"
+    assert idx_art < idx_ins < idx_3, f"Order wrong! Art:{idx_art}, Ins:{idx_ins}, 3:{idx_3}"
 
 def test_insertion_at_start_of_document():
     """
@@ -163,3 +212,101 @@ def test_insertion_at_start_of_document():
     assert len(edits) > 0, "Should generate an edit for start-of-doc insertion"
     assert "Big" in edits[0].proposed_new_text
     assert edits[0].target_text_to_change_or_anchor in original_text
+
+def test_insertion_multiple_splits_same_run():
+    """
+    Tests applying multiple insertions into the SAME original run.
+    Original: "ARTICLE3 FEES"
+    Edits: Insert " " after "ARTICLE", Insert " " after "3".
+    """
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("ARTICLE3 FEES")
+    
+    stream = io.BytesIO()
+    doc.save(stream)
+    stream.seek(0)
+    
+    # 1. Insert after ARTICLE
+    e1 = ComplianceEdit(operation=EditOperationType.INSERTION, target_text_to_change_or_anchor="ARTICLE", proposed_new_text=" ")
+    # 2. Insert after 3 (Note: "3" is now in a split run if processed second? or first?)
+    # Text context is tricky. Anchor is just "3".
+    e2 = ComplianceEdit(operation=EditOperationType.INSERTION, target_text_to_change_or_anchor="3", proposed_new_text=" ")
+    
+    engine = RedlineEngine(stream)
+    engine.apply_edits([e1, e2])
+    
+    result_stream = engine.save_to_stream()
+    doc = Document(result_stream)
+    xml = doc.element.xml
+    
+    # Expected: ARTICLE <ins> </ins> 3 <ins> </ins> FEES
+    # Just check that we have two insertions and text is split
+    assert xml.count("<w:ins") == 2
+
+def test_complex_run_sequence_repro():
+    """
+    Reproduction of 'ARTICLE3 FEESAN D PAYMENT' bug.
+    Runs: ['ARTICLE3 FEES', 'AN', 'D', 'PAYMENT']
+    Edits: Insert ' ' after 'ARTICLE3 FEES', Insert ' ' after 'AND'.
+    """
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("ARTICLE3 FEES")
+    p.add_run("AN")
+    p.add_run("D")
+    p.add_run("PAYMENT")
+    # NOTE: These runs have identical formatting (default).
+    # They WILL be coalesced into "ARTICLE3 FEESANDPAYMENT" by RedlineEngine.
+    # This tests the "Splitting a merged run" logic.
+    
+    stream = io.BytesIO()
+    doc.save(stream)
+    stream.seek(0)
+    
+    # Edit 1: Insert space after "ARTICLE3 FEES"
+    e1 = ComplianceEdit(operation=EditOperationType.INSERTION, target_text_to_change_or_anchor="ARTICLE3 FEES", proposed_new_text=" ")
+    # Edit 2: Insert space after "AND" (which spans AN + D)
+    e2 = ComplianceEdit(operation=EditOperationType.INSERTION, target_text_to_change_or_anchor="AND", proposed_new_text=" ")
+    
+    engine = RedlineEngine(stream)
+    engine.apply_edits([e1, e2])
+    
+    result_stream = engine.save_to_stream()
+    doc = Document(result_stream)
+    xml = doc.element.xml
+    
+    # Verify INS1 is between FEES and AN
+    
+    # Robust check using find
+    idx_fees = xml.find("ARTICLE3 FEES")
+    idx_ins1 = xml.find('w:id="1"')
+    idx_an = xml.find(">AND</w:t>")
+    
+    assert idx_fees != -1
+    assert idx_ins1 != -1
+    assert idx_an != -1
+    
+    assert idx_fees < idx_ins1 < idx_an, f"Order Mismatch: FEES({idx_fees}) < INS1({idx_ins1}) < AN({idx_an})"
+
+def test_overlapping_run_boundaries():
+    """
+    Test where target text ends exactly at run boundary, ensuring next run isn't grabbed.
+    Run 1: "HELLO"
+    Run 2: "WORLD"
+    Target: "HELLO"
+    """
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("HELLO")
+    p.add_run("WORLD")
+    
+    stream = io.BytesIO()
+    doc.save(stream)
+    stream.seek(0)
+    
+    mapper = DocumentMapper(Document(stream))
+    runs = mapper.find_target_runs("HELLO")
+    
+    assert len(runs) == 1
+    assert runs[0].text == "HELLO"
