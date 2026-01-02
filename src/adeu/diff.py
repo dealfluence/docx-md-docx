@@ -23,7 +23,7 @@ def generate_edits_from_text(original_text: str, modified_text: str) -> List[Com
     
     last_equal_text = ""
     
-    for op, text in diffs:
+    for i, (op, text) in enumerate(diffs):
         if op == 0: # Equal
             # Keep track of the last known "stable" text to use as anchor
             # We only need the last few words to be safe, but storing it all is fine for now
@@ -46,14 +46,27 @@ def generate_edits_from_text(original_text: str, modified_text: str) -> List[Com
             anchor = last_equal_text[-50:] if last_equal_text else ""
             
             logger.debug(f"Diff Insert: {repr(text)} Anchor (Tail): {repr(anchor[-20:])}")
-            # If immediately following a deletion, we might want to merge into MODIFICATION?
-            # For this MVP, we treat them as separate atomic ops (Delete X, then Insert Y).
-            # The RedlineEngine handles sequential edits fine.
             
             if not anchor:
-                logger.warning(f"Insertion at start of file or without context: '{text[:20]}...'")
-                # Fallback: We might need a 'prepend' logic in engine, 
-                # but for contracts, usually there is context.
+                # Handle Start-of-Document Insertion
+                # Look ahead for context
+                if i + 1 < len(diffs) and diffs[i+1][0] == 0:
+                    next_text = diffs[i+1][1]
+                    # Use the start of the next text as the target to modify
+                    # Heuristic: Take the first significant word/chunk
+                    anchor_target = next_text.split(" ")[0] if " " in next_text else next_text[:20]
+                    
+                    if anchor_target:
+                        logger.info(f"Converting start-of-doc insert to modification of '{anchor_target}'")
+                        edits.append(ComplianceEdit(
+                            operation=EditOperationType.MODIFICATION,
+                            target_text_to_change_or_anchor=anchor_target,
+                            proposed_new_text=text + anchor_target,
+                            thought_process="Diff: Start-of-doc insertion (converted to modification)"
+                        ))
+                        continue
+
+                logger.warning(f"Insertion at start of file or without context ignored: '{text[:20]}...'")
                 continue
 
             edits.append(ComplianceEdit(
