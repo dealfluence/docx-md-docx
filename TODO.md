@@ -13,6 +13,7 @@
 *   **Run Splitting Stability**: Fixed run splitting logic (`addnext`) to ensure insertions land in the correct order relative to split nodes.
 *   **Fuzz Testing**: Implemented property-based testing (disabled strict correctness check due to DMP semantic ambiguity edge cases, but engine stability is verified).
 *   **Formatting Preservation**: Implemented heuristic in `RedlineEngine` to inherit style from the next run if insertion appears to be a prefix (ends in space).
+*   **Native Comments**: Replaced simulated colored text with real `w:comment` XML parts and anchors.
 
 ## 🐛 Known Issues
 ### 1. Table Layouts
@@ -28,4 +29,5 @@
 *   `src/adeu/redline/engine.py`: **The Brain**. modifying this requires care.
 *   `src/adeu/redline/mapper.py`: **The Map**. If searching fails, look here.
 *   `tests/test_roundtrip.py`: **The Proof**. Run this before pushing.
+*   `src/adeu/redline/comments.py`: **The Comments**. Handles OXML part relationships.
 *   `tests/test_properties.py`: **The Fuzzer**. Generates random docs to test crash resilience.

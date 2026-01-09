@@ -47,6 +47,7 @@ Adeu supports two distinct output modes.
 *   **Mapping**: `DocumentMapper` creates an index of text offsets to XML elements.
 *   **Injection**: Surgically inserts `w:ins` (Insertion) and `w:del` (Deletion) tags into the *existing* XML tree.
 *   **Formatting Inheritance**: New text automatically inherits the font/size/style of the anchor point.
+*   **Comments**: `CommentsManager` handles the OXML complexity of creating `word/comments.xml` and anchoring comments with `w:commentRangeStart/End` tags.
 
 #### Track B: The Generator (Low Fidelity / Visual)
 **Use Case**: Summaries, Simple Clean Copies, PDF Reports.
@@ -97,6 +98,7 @@ class ComplianceEdit(BaseModel):
         |-- redline/
             |-- redline_engine.py # The XML Injector
             |-- document_mapper.py # The Text-to-XML Bridge
+            |-- comments.py       # OXML Comments Manager
         |-- file_processing.py    # Ingestion & Visual Generator
 |-- tests/
     |-- test_fileprocessing.py
