@@ -1,87 +1,119 @@
-# Adeu: Automated DOCX Redlining Engine
+# Adeu: Agentic DOCX Redlining Engine
 
-Adeu is a Python engine for automated document redlining. It solves the "Round-Trip Problem" in Legal Tech: allowing Large Language Models (LLMs) to edit documents while preserving 100% of the original DOCX formatting, styles, and headers.
+Adeu is a specialized Python engine designed to allow AI Agents and LLMs to redline Microsoft Word documents (`.docx`) without corrupting them.
 
-## 🚀 Key Features
+Unlike standard text converters, Adeu solves the **Round-Trip Problem**: it allows an AI to read a document, propose specific edits, and "inject" those changes back into the original binary file as native Track Changes (`w:ins`, `w:del`) and Comments.
 
-*   **High-Fidelity Retention**: Does not "convert" the DOCX to Markdown and back. Instead, it extracts text for the LLM and "injects" changes back into the original binary file.
-*   **Native Redlines**: Generates real Microsoft Word Track Changes (`w:ins`, `w:del`).
-*   **Split-Run Handling**: Intelligently handles Word's complex XML structure where a single word like "Contract" might be split into `["Con", "tract"]`.
-*   **Robust Diffing**: Calculates semantic diffs between the original text and LLM output to generate precise edits.
-*   **Native Comments**: Injects real Microsoft Word comments (Review pane) linked to specific text ranges, avoiding document clutter.
+## 🤖 Model Context Protocol (MCP) Server
 
-## 🛠️ Installation
+Adeu is primarily designed as an **MCP Server**. This allows AI tools (like Claude Desktop, Cursor, or custom agents) to directly interact with local Word documents.
 
-Adeu uses `poetry` for dependency management.
+### Setup for Claude Desktop
 
-```bash
-git clone https://github.com/your-org/adeu.git
-cd adeu
-poetry install
-```
+1.  **Install Adeu** (or clone the repo):
+    ```bash
+    git clone https://github.com/dealfluence/adeu.git
+    cd adeu
+    # Ensure you have a python environment ready
+    pip install .
+    ```
+
+2.  **Configure Claude Desktop**:
+    Open your config file (MacOS: `~/Library/Application Support/Claude/claude_desktop_config.json`) and add the server:
+
+    ```json
+    {
+      "mcpServers": {
+        "adeu": {
+          "command": "uv",
+          "args": [
+            "--directory",
+            "/absolute/path/to/adeu",
+            "run",
+            "adeu/server.py"
+          ]
+        }
+      }
+    }
+    ```
+    *(Note: You can use `python` instead of `uv` if you manage dependencies manually, but `uv` is recommended for fast environment handling).*
+
+### Exposed Tools
+
+Once connected, the Agent has access to these tools:
+
+1.  **`read_docx(file_path)`**
+    *   Extracts text from a local DOCX file.
+    *   *Usage*: "Read the contract at `~/Downloads/saas_agreement.docx`."
+
+2.  **`apply_structured_edits(original_path, edits, output_path)`**
+    *   The core engine. The Agent constructs a list of changes (Insert, Delete, Modify) and Adeu injects them.
+    *   *Usage*: "Change the Governing Law to 'California' and delete the Non-Compete clause."
+
+3.  **`diff_docx_files(original_path, modified_path)`**
+    *   Compares two files and returns a semantic word-level diff.
+    *   *Usage*: "Compare `v1.docx` and `v2.docx` and summarize the changes."
+
+---
 
 ## 🖥️ CLI Usage
 
-The built-in CLI handles the full workflow:
-
-### 1. Extract Text
-Convert a DOCX to Markdown for manual or LLM editing.
+Adeu includes a standalone CLI for batch processing or manual workflows.
 
 ```bash
-poetry run python cli.py contracts/my_contract.docx
-# Output: contracts/my_contract.md
+# 1. Extract text for LLM processing
+poetry run python cli.py contracts/agreement.docx
+# Output: contracts/agreement.md
+
+# 2. Apply Redlines (from a JSON list of edits or a modified Markdown file)
+poetry run python cli.py contracts/agreement.docx contracts/agreement_modified.md
+# Output: contracts/agreement_redlined.docx
 ```
-
-### 2. Apply Redlines
-Compare the modified Markdown against the original DOCX and generate a redlined copy.
-
-```bash
-poetry run python cli.py contracts/my_contract.docx contracts/my_contract.md
-# Output: contracts/my_contract_redlined.docx
-```
-
-## 🤖 MCP Server
-
-Adeu includes a Model Context Protocol (MCP) server. This allows AI agents (like Claude Desktop) to directly read, analyze, and redline DOCX iles on your local machine.
-
-### Tools Exposed
-* read_docx(path): Reads a document and returns its text content (for the AI to analyze).
-* apply_structured_edits(original_path, edits, output_path): The AI generates structured JSON edits, and the server injects them as Track Changes.
 
 ## 📦 Library Usage
 
+You can use Adeu directly in your Python applications to build custom legal tech pipelines.
+
 ```python
-from pathlib import Path
 from io import BytesIO
-from adeu.diff import generate_edits_from_text
 from adeu.redline.engine import RedlineEngine
-from adeu.ingest import extract_text_from_stream
+from adeu.models import DocumentEdit, EditOperationType
 
-# 1. Load Data
+# 1. Load your document
 with open("contract.docx", "rb") as f:
-    original_bytes = f.read()
-    
-# 2. Extract Text (for LLM)
-text = extract_text_from_stream(BytesIO(original_bytes))
+    doc_stream = BytesIO(f.read())
 
-# 3. ... LLM modifies 'text' to 'new_text' ...
+# 2. Define an edit (usually generated by an LLM)
+edit = DocumentEdit(
+    operation=EditOperationType.MODIFICATION,
+    target_text="State of New York",
+    new_text="State of Delaware",
+    comment="Changed governing law per client instruction."
+)
 
-# 4. Generate Diff
-edits = generate_edits_from_text(text, new_text)
+# 3. Apply the edit
+engine = RedlineEngine(doc_stream)
+engine.apply_edits([edit])
 
-# 5. Apply Edits
-engine = RedlineEngine(BytesIO(original_bytes))
-engine.apply_edits(edits)
-
-# 6. Save
+# 4. Save the result
 with open("contract_redlined.docx", "wb") as f:
     f.write(engine.save_to_stream().getvalue())
 ```
 
-## 🏗️ Architecture
+## 🚀 Key Features
 
-*   `src/adeu/ingest.py`: Extracts text using `python-docx` raw run concatenation to ensure 1:1 mapping.
-*   `src/adeu/redline/mapper.py`: Indexer that maps text offsets back to specific XML `Run` elements.
-*   `src/adeu/redline/engine.py`: The core injector that modifies the XML DOM.
-*   `src/adeu/redline/comments.py`: Manages the OXML `comments.xml` part and relationships.
-*   `src/adeu/diff.py`: Wraps `diff-match-patch` to convert string diffs into `ComplianceEdit` objects.
+*   **Native Redlines**: Generates real Microsoft Word Track Changes (`w:ins`, `w:del`).
+*   **Split-Run Handling**: Intelligently handles Word's complex XML structure where a single word like "Contract" might be split into `["Con", "tract"]`.
+*   **Format Preservation**: Does not convert the doc to Markdown and back. Formatting, headers, footers, and images are preserved 100%.
+*   **Native Comments**: Injects real comments into the `word/comments.xml` part, linked to specific text ranges.
+
+## 🛠️ Installation for Development
+
+Adeu uses `poetry` for dependency management.
+
+```bash
+git clone https://github.com/dealfluence/adeu.git
+cd adeu
+poetry install
+poetry run pytest
+```

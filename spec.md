@@ -1,115 +1,81 @@
-# Project Adeu: Automated DOCX Redlining Engine
+# Project Adeu: Technical Specification
 
 ## 1. Architectural Overview
 
-Adeu enables a "Round-Trip" workflow for document negotiation without breaking the formatting of the original source file. It solves the "DOCX -> LLM -> DOCX" problem using a **Reference-Based Injection** strategy.
+Adeu operates on a **Reference-Based Injection** strategy. Instead of converting a document to an intermediate format (like Markdown) and trying to rebuild it, Adeu keeps the original XML structure intact and surgically injects `w:ins` (insert) and `w:del` (delete) tags.
 
 ### The Pipeline
 
 ```mermaid
 graph LR
-    A[Original DOCX] -->|Ingestion| B(Markdown)
-    B -->|LLM Processing| C{AI Operations}
-    C -->|Path A: Structured Edits| D[ComplianceEdit Objects]
-    C -->|Path B: Full Rewrite| E[Modified Markdown]
-    E -->|Diffing Engine| D
-    D -->|Injection Engine| F[Redlined DOCX]
+    A[Original DOCX] -->|Ingestion| B(Raw Text)
+    B -->|LLM / Agent| C{AI Reasoning}
+    C -->|Structured Edits| D[DocumentEdit Objects]
+    D -->|Mapping Engine| E[XML DOM Index]
+    E -->|Redline Engine| F[Redlined DOCX]
 ```
 
 ## 2. Component Detail
 
-### Phase I: Ingestion (DOCX -> MD)
-**Goal**: Convert binary DOCX into semantic Markdown that an LLM can understand and reference.
-**Tool**: `MarkItDown` (Microsoft).
-*   **Why**: It handles the conversion of tables, lists, and headers into token-efficient Markdown better than standard regex parsers.
-*   **Implementation**: `app/services/file_processing.py`.
+### 2.1 Ingestion (`src/adeu/ingest.py`)
+**Goal**: Provide text to the LLM that maps 1:1 with the underlying XML runs.
+*   **Mechanism**: It does *not* use `docx.Paragraph.text`. Instead, it iterates over visible XML runs and concatenates them. This ensures that if the LLM sees a space, that space exists in a run, allowing the mapper to find it later.
 
-### Phase II: The Logic Core (LLM & Diffing)
-**Goal**: Determine exactly *what* changed.
-**Strategy**:
-1.  **Structured Output**: The LLM returns a list of `ComplianceEdit` objects.
-2.  **Full Rewrite Support**: If the LLM rewrites the document, we use `diff-match-patch` to generate the edits.
-    *   *Algorithm*: `diff(Original_MD, New_MD)` -> List of Diffs.
-    *   *Conversion*:
-        *   `Diff(DELETE, "old")` + `Diff(INSERT, "new")` -> `ComplianceEdit(MODIFICATION, target="old", new="new")`
-        *   `Diff(DELETE, "old")` -> `ComplianceEdit(DELETION, target="old")`
-        *   `Diff(INSERT, "new")` -> `ComplianceEdit(INSERTION, anchor="preceding_text", new="new")`
+### 2.2 The Mapper (`src/adeu/redline/mapper.py`)
+**Goal**: Translate linear text offsets into XML elements.
+*   **Challenge**: Word splits text arbitrarily (e.g., spellcheck breaks "Agreement" into `<w:r>Agree</w:r><w:r>ment</w:r>`).
+*   **Solution**: The Mapper builds a linear index of every `Run` in the document. When an edit targets text at index 50-60, the Mapper identifies exactly which runs (or partial runs) contain that text.
+*   **Run Splitting**: If an edit starts in the middle of a run, the Mapper splits the underlying XML element into two sibling runs (`_split_run_at_index`).
 
-### Phase III: The Reconstruction Engines
-Adeu supports two distinct output modes.
+### 2.3 The Redline Engine (`src/adeu/redline/engine.py`)
+**Goal**: Inject edits into the DOM.
+*   **Indexed Editing**: Applies edits in **reverse order** (by index) to prevent index shifting.
+*   **Style Heuristics**: When inserting text, the engine checks neighboring runs. If inserting a suffix, it mimics the previous run's style. If inserting a prefix (e.g., "Very " before "Important"), it mimics the next run's style.
+*   **Comments**: Uses `CommentsManager` to manipulate the OPC package relationships, creating `word/comments.xml` if it doesn't exist.
 
-#### Track A: The Injector (High Fidelity)
-**Use Case**: Legal Redlining, Contract Negotiation.
-**Constraint**: Must preserve original headers, footers, styles, and numbering.
-**Component**: `RedlineEngine` (`app/services/redline/redline_engine.py`).
-**Mechanism**:
-*   **Normalization**: Uses `normalize_docx` to merge split XML runs, ensuring "contract" is one run, not `["con", "tract"]`.
-*   **Mapping**: `DocumentMapper` creates an index of text offsets to XML elements.
-*   **Injection**: Surgically inserts `w:ins` (Insertion) and `w:del` (Deletion) tags into the *existing* XML tree.
-*   **Formatting Inheritance**: New text automatically inherits the font/size/style of the anchor point.
-*   **Comments**: `CommentsManager` handles the OXML complexity of creating `word/comments.xml` and anchoring comments with `w:commentRangeStart/End` tags.
-
-#### Track B: The Generator (Low Fidelity / Visual)
-**Use Case**: Summaries, Simple Clean Copies, PDF Reports.
-**Component**: `RedlineDocxGenerator` (`app/services/file_processing.py`).
-**Mechanism**:
-*   Converts Markdown -> HTML -> New DOCX.
-*   Uses HTML/CSS classes (`<del>`, `<ins>`) to render visual redlines (colors/strikethrough) but does not use native Track Changes tags.
+### 2.4 The Diff Engine (`src/adeu/diff.py`)
+**Goal**: Support "Full Rewrite" workflows.
+*   If an Agent rewrites a whole paragraph instead of providing specific edits, the Diff engine compares `Original Text` vs `New Text`.
+*   It uses `diff-match-patch` at a **word-level granularity** (encoding words as characters) to ensure changes are semantic (whole words) rather than character jumbles.
 
 ## 3. Data Structures
 
-The system relies on a strict contract between the LLM/Diff Engine and the Redline Engine.
+The system relies on the `DocumentEdit` schema defined in `src/adeu/models.py`.
 
-### 3.1 `ComplianceEdit` Schema
 ```python
 class EditOperationType(str, Enum):
     INSERTION = "INSERTION"
     DELETION = "DELETION"
     MODIFICATION = "MODIFICATION"
 
-class ComplianceEdit(BaseModel):
+class DocumentEdit(BaseModel):
     operation: EditOperationType
-    # The text to find in the document. 
-    # For INSERTION, this is the "Anchor" text immediately preceding the insertion.
-    target_text_to_change_or_anchor: str 
-    # The new text to insert. None for DELETION.
-    proposed_new_text: Optional[str] 
-    thought_process: Optional[str]
+    # The exact text to find (or anchor for insertion)
+    target_text: str 
+    # The new text to apply
+    new_text: Optional[str] 
+    # Optional comment to appear in the Review pane
+    comment: Optional[str]
 ```
 
-## 4. Technical Implementation Status
-
-| Feature | Component | Status |
-| :--- | :--- | :--- |
-| **Extraction** | `MarkItDown` | ✅ Implemented |
-| **Normalization** | `normalize_docx` | ✅ Implemented |
-| **Text Mapping** | `DocumentMapper` | ✅ Implemented |
-| **Native Redlines** | `RedlineEngine` | ✅ Implemented |
-| **Visual Redlines** | `RedlineDocxGenerator` | ✅ Implemented |
-| **Text Diffing** | `diff-match-patch` | 🚧 Planned |
-
-## 5. Project Structure
+## 4. Project Structure
 
 ```text
-|-- app/
-    |-- services/
-        |-- ai/
-            |-- schemas.py       # ComplianceEdit definition
+|-- src/
+    |-- adeu/
+        |-- server.py           # FastMCP Server Entrypoint
+        |-- ingest.py           # Text Extraction (Run-aware)
+        |-- diff.py             # Word-level Diffing
+        |-- models.py           # Pydantic Schemas
         |-- redline/
-            |-- redline_engine.py # The XML Injector
-            |-- document_mapper.py # The Text-to-XML Bridge
-            |-- comments.py       # OXML Comments Manager
-        |-- file_processing.py    # Ingestion & Visual Generator
-|-- tests/
-    |-- test_fileprocessing.py
+            |-- engine.py       # Main Logic / XML Injection
+            |-- mapper.py       # Text -> XML Indexing
+            |-- comments.py     # OXML Comments Management
+        |-- utils/
+            |-- docx.py         # Low-level XML Helpers
 ```
 
-## 6. Key Challenges & Solutions
+## 5. Known Limitations
 
-### 6.1 The "Split Run" Problem
-**Issue**: Word splits text arbitrarily (e.g., spellcheck breaks a word into two XML nodes).
-**Solution**: `DocumentMapper` identifies the start and end nodes of a target phrase. `RedlineEngine` splits the boundary nodes if a match starts in the middle of a node, ensuring precise tagging.
-
-### 6.2 Table & Nested Content
-**Issue**: Standard libraries often skip tables.
-**Solution**: Recursive traversal (`_search_tables_for_redline`) ensures edits inside cells and nested tables are applied.
+1.  **Table Structure Changes**: Adeu can edit text *inside* table cells, but it cannot currently merge cells, add rows, or delete columns via the structured edit interface.
+2.  **Complex Field Codes**: Edits inside complex field codes (like automated dates or TOCs) may result in broken fields.
