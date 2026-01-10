@@ -350,3 +350,45 @@ def test_split_run_ordering_repro():
     idx_ins = xml.find("> END</w:t>")
     
     assert idx_0 < idx_ins, f"0 ({idx_0}) should be before END ({idx_ins})"
+
+def test_manual_context_disambiguation():
+    """
+    Proves that users can disambiguate targets simply by including more text,
+    without needing specific 'context_before' fields.
+    Scenario: "Section 1: Fee" ... "Section 2: Fee"
+    Action: Change second Fee to Price by targeting "Section 2: Fee".
+    """
+    doc = Document()
+    doc.add_paragraph("Section 1: Fee")
+    doc.add_paragraph("Section 2: Fee")
+    
+    stream = io.BytesIO()
+    doc.save(stream)
+    stream.seek(0)
+    
+    # 1. Ambiguous Edit (would normally hit the first one or warn)
+    # But here we use the "Context Strategy"
+    edit = DocumentEdit(
+        operation=EditOperationType.MODIFICATION,
+        target_text="Section 2: Fee",
+        new_text="Section 2: Price",
+        comment="Disambiguated via context"
+    )
+    
+    engine = RedlineEngine(stream)
+    applied, skipped = engine.apply_edits([edit])
+    
+    assert applied == 1
+    assert skipped == 0
+    
+    result_stream = engine.save_to_stream()
+    doc = Document(result_stream)
+    xml = doc.element.xml
+    
+    # Verify Section 1 is untouched
+    assert "Section 1: Fee" in xml or "Section 1: </w:t><w:t>Fee" in xml
+    
+    # Verify Section 2 is Redlined
+    # We expect "Section 2: Fee" to be deleted and "Section 2: Price" inserted
+    assert "<w:delText>Section 2: Fee</w:delText>" in xml or ("Section 2: " in xml and "Fee</w:delText>" in xml)
+    assert "<w:t>Section 2: Price</w:t>" in xml

@@ -15,12 +15,12 @@ class DocumentEdit(BaseModel):
     
     target_text: str = Field(
         ..., 
-        description="Exact text to find in the document. For DELETION/MODIFICATION, this is the text to remove. For INSERTION, this is the 'anchor' text immediately PRECEDING the new content."
+        description="Exact text to find. If the text appears multiple times (e.g. 'Fee'), include surrounding context (e.g. 'Section 2: Fee') to ensure the correct instance is matched. For INSERTION, this is the anchor immediately PRECEDING the new content."
     )
     
     new_text: Optional[str] = Field(
         None, 
-        description="The new text to insert. Required for INSERTION and MODIFICATION. Should be None for DELETION."
+        description="The new text to insert. If you included context in target_text to ensure uniqueness, you MUST repeat that context here (e.g. target='Section 2: Fee', new='Section 2: Price')."
     )
     
     comment: Optional[str] = Field(
