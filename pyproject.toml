@@ -6,6 +6,9 @@ authors = ["Mikko Korpela"]
 readme = "spec.md"
 packages = [{include = "adeu", from = "src"}]
 
+[tool.poetry.scripts]
+adeu = "adeu.cli:main"
+
 [tool.poetry.dependencies]
 python = "^3.10"
 python-docx = "*"
